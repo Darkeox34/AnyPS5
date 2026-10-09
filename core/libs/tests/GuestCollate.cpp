@@ -11,6 +11,7 @@
 extern "C" {
 extern GuestLocale::Implementation* _ZSt21_sceLibcClassicLocale_nid_postfix;
 std::size_t APS5_VABI _ZNSt7collateIcE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(GuestLocale::Facet** facet, const GuestLocale::Implementation* const* locale);
+std::size_t APS5_VABI _ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(GuestLocale::Facet** facet, const GuestLocale::Implementation* const* locale);
 }
 
 namespace {
@@ -55,12 +56,24 @@ const GuestLocale::CollateVtable& Vtable(const GuestLocale::Facet* facet) {
     return *reinterpret_cast<const GuestLocale::CollateVtable*>(facet->vtable);
 }
 
+const GuestLocale::WideCollateVtable& WideVtable(const GuestLocale::Facet* facet) {
+    return *reinterpret_cast<const GuestLocale::WideCollateVtable*>(facet->vtable);
+}
+
 int Compare(const GuestLocale::CollateFacet* facet, const std::string& left, const std::string& right) {
     return Vtable(&facet->base).compare(facet, left.data(), left.data() + left.size(), right.data(), right.data() + right.size());
 }
 
+int WideCompare(const GuestLocale::CollateFacet* facet, const std::u16string& left, const std::u16string& right) {
+    return WideVtable(&facet->base).compare(facet, left.data(), left.data() + left.size(), right.data(), right.data() + right.size());
+}
+
 std::uint64_t Hash(const GuestLocale::CollateFacet* facet, const std::string& text) {
     return static_cast<std::uint64_t>(Vtable(&facet->base).hash(facet, text.data(), text.data() + text.size()));
+}
+
+std::uint64_t WideHash(const GuestLocale::CollateFacet* facet, const std::u16string& text) {
+    return static_cast<std::uint64_t>(WideVtable(&facet->base).hash(facet, text.data(), text.data() + text.size()));
 }
 
 }
@@ -152,5 +165,82 @@ int main() {
     require(frees == 0);
     Vtable(facet).facet.deleteObject(facet);
     require(frees == 1 && lastFree == collate);
+
+    require(_ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(nullptr, classic) == 1);
+    GuestLocale::Facet existingWide{};
+    GuestLocale::Facet* wideFacet = &existingWide;
+    require(_ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(&wideFacet, classic) == 1);
+    require(wideFacet == &existingWide);
+
+    wideFacet = nullptr;
+    reject([&] { _ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(&wideFacet, &frenchPointer); });
+    require(wideFacet == nullptr);
+
+    const auto allocationsBefore = allocations;
+    require(_ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(&wideFacet, classic) == 1);
+    require(wideFacet != nullptr && allocations == allocationsBefore + 1 && lastSize == sizeof(GuestLocale::CollateFacet) && lastAllocation == wideFacet);
+    const auto* wideCollate = reinterpret_cast<const GuestLocale::CollateFacet*>(wideFacet);
+    require(wideFacet->references == 0 && wideCollate->collation == nullptr && wideCollate->wideCollation == nullptr);
+
+    require(WideCompare(wideCollate, u"abc", u"abd") == -1);
+    require(WideCompare(wideCollate, u"abd", u"abc") == 1);
+    require(WideCompare(wideCollate, u"a", u"c") == -1);
+    require(WideCompare(wideCollate, u"abc", u"abc") == 0);
+    require(WideCompare(wideCollate, u"ab", u"abc") == -1);
+    require(WideCompare(wideCollate, u"abc", u"ab") == 1);
+    require(WideCompare(wideCollate, u"", u"") == 0);
+    require(WideCompare(wideCollate, u"", u"a") == -1);
+    require(WideCompare(wideCollate, u"a", u"") == 1);
+    require(WideCompare(wideCollate, std::u16string(u"a\0", 2), u"a") == 1);
+    require(WideCompare(wideCollate, std::u16string(u"a\0b", 3), std::u16string(u"a\0c", 3)) == -1);
+    require(WideVtable(wideFacet).compare(wideCollate, nullptr, nullptr, nullptr, nullptr) == 0);
+    const char16_t wideText[] = u"abc";
+    reject([&] { WideVtable(wideFacet).compare(wideCollate, wideText + 2, wideText, wideText, wideText + 1); });
+    reject([&] { WideVtable(wideFacet).compare(wideCollate, nullptr, wideText, wideText, wideText + 1); });
+
+    require(WideHash(wideCollate, u"") == 0xcbf29ce484222325ull);
+    require(WideHash(wideCollate, u"a") == ((0xcbf29ce484222325ull ^ static_cast<std::uint16_t>(u'a')) * 0x100000001b3ull));
+    require(WideHash(wideCollate, u"foobar") != 0);
+    reject([&] { WideVtable(wideFacet).hash(wideCollate, wideText + 1, wideText); });
+
+    GuestLocale::WideString wideResult;
+    std::memset(&wideResult, 0xcd, sizeof(wideResult));
+    const std::u16string wideShort = u"hello";
+    require(WideVtable(wideFacet).transform(&wideResult, wideCollate, wideShort.data(), wideShort.data() + wideShort.size()) == &wideResult);
+    require(wideResult.reserved == 0xcdcdcdcdcdcdcdcdull && wideResult.size == 5 && wideResult.capacity == 7 && std::u16string(wideResult.buffer) == wideShort);
+
+    std::memset(&wideResult, 0xcd, sizeof(wideResult));
+    require(WideVtable(wideFacet).transform(&wideResult, wideCollate, nullptr, nullptr) == &wideResult);
+    require(wideResult.size == 0 && wideResult.capacity == 7 && wideResult.buffer[0] == 0);
+
+    const std::u16string seven(7, u'q');
+    require(WideVtable(wideFacet).transform(&wideResult, wideCollate, seven.data(), seven.data() + seven.size()) == &wideResult);
+    require(wideResult.size == 7 && wideResult.capacity == 7 && std::u16string(wideResult.buffer) == seven);
+
+    const std::u16string wideLong = u"wide collation of a longer text";
+    require(WideVtable(wideFacet).transform(&wideResult, wideCollate, wideLong.data(), wideLong.data() + wideLong.size()) == &wideResult);
+    require(wideResult.size == wideLong.size() && wideResult.capacity == wideLong.size() && std::u16string(wideResult.pointer) == wideLong);
+    std::free(wideResult.pointer);
+
+    const std::u16string wideLargest(4094, u'z');
+    require(WideVtable(wideFacet).transform(&wideResult, wideCollate, wideLargest.data(), wideLargest.data() + wideLargest.size()) == &wideResult);
+    require(wideResult.size == 4094 && wideResult.capacity == 4094 && std::u16string(wideResult.pointer) == wideLargest);
+    std::free(wideResult.pointer);
+
+    const std::u16string wideTooLong(4095, u'z');
+    reject([&] { WideVtable(wideFacet).transform(&wideResult, wideCollate, wideTooLong.data(), wideTooLong.data() + wideTooLong.size()); });
+    const std::u16string wideEmbedded(u"a\0b", 3);
+    reject([&] { WideVtable(wideFacet).transform(&wideResult, wideCollate, wideEmbedded.data(), wideEmbedded.data() + wideEmbedded.size()); });
+    reject([&] { WideVtable(wideFacet).transform(nullptr, wideCollate, wideText, wideText + 1); });
+
+    WideVtable(wideFacet).facet.retain(wideFacet);
+    WideVtable(wideFacet).facet.retain(wideFacet);
+    require(wideFacet->references == 2);
+    require(WideVtable(wideFacet).facet.release(wideFacet) == nullptr && wideFacet->references == 1);
+    require(WideVtable(wideFacet).facet.release(wideFacet) == wideFacet && wideFacet->references == 0);
+    WideVtable(wideFacet).facet.destroy(wideFacet);
+    const auto freesBefore = frees;
+    WideVtable(wideFacet).facet.deleteObject(wideFacet);
+    require(frees == freesBefore + 1 && lastFree == wideCollate);
     return 0;
 }
